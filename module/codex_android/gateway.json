@@ -1,0 +1,9 @@
+{
+  "base_url": "",
+  "api_key": "",
+  "model": "",
+  "upstream_wire": "chat",
+  "token": "",
+  "workspace": "/data/adb/codex/workspace",
+  "listen": "0.0.0.0:8787"
+}
