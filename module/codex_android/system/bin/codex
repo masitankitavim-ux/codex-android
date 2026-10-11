@@ -1,0 +1,9 @@
+#!/system/bin/sh
+# codex 启动包装：补齐安卓上缺失的运行环境
+DATA=/data/adb/codex
+export HOME="$DATA"
+export CODEX_HOME="$DATA"
+export TMPDIR="$DATA/tmp"
+export SHELL=/system/bin/sh
+[ -f "$DATA/ca-bundle.crt" ] && export SSL_CERT_FILE="$DATA/ca-bundle.crt"
+exec "$DATA/bin/codex" "$@"
