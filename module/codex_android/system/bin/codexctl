@@ -1,0 +1,175 @@
+#!/system/bin/sh
+# codexctl —— Codex CLI for Android 的控制台
+DATA=/data/adb/codex
+GW=$DATA/gateway.json
+LOG=$DATA/codexweb.log
+PORT=8787
+BASE="http://127.0.0.1:$PORT"
+
+jget() {
+  sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$GW" 2>/dev/null | head -1
+}
+
+jset() {
+  # jset <key> <value> —— 先试 HTTP API，失败则直接改 gateway.json
+  key="$1"; val="$2"
+  tok=$(jget token)
+  if [ -n "$tok" ]; then
+    r=$(curl -s --max-time 8 -X POST "$BASE/api/settings" \
+        -H "X-Codexweb-Token: $tok" -H "Content-Type: application/json" \
+        -d "{\"$key\":\"$val\"}" 2>/dev/null)
+    case "$r" in
+      *'"ok":true'*) echo "已保存：$key = $val"; return 0 ;;
+    esac
+  fi
+  [ -f "$GW" ] || { echo "找不到 $GW"; return 1; }
+  sed -i "s|\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"$key\": \"$val\"|" "$GW" 2>/dev/null
+  if grep -q "\"$key\"" "$GW"; then
+    echo "已写入 $GW：$key = $val（重启网关生效：codexctl restart）"
+  else
+    echo "写入失败，请手工编辑 $GW"
+    return 1
+  fi
+}
+
+ips() {
+  ip -4 addr 2>/dev/null | sed -n 's/.*inet \([0-9.]*\)\/.*/\1/p' | grep -v '^127\.' | sort -u
+}
+
+urls() {
+  tok=$(jget token)
+  [ -z "$tok" ] && { echo "（还没有访问口令：网关尚未启动过。先执行 codexctl restart）"; return; }
+  for a in $(ips); do
+    echo "  http://$a:$PORT/?t=$tok"
+  done
+  echo "  http://127.0.0.1:$PORT/?t=$tok   # 手机本机浏览器"
+}
+
+case "$1" in
+  ""|help|-h|--help)
+    cat <<EOF
+codexctl —— Codex CLI for Android
+
+  查看
+    codexctl status              网关 / 二进制 / 当前配置 一览
+    codexctl web | url           打印网页控制台地址（含访问口令）
+    codexctl token               只打印访问口令
+    codexctl models              拉取上游模型列表
+    codexctl log [-f]            查看网关日志
+
+  配置（改完立即生效）
+    codexctl set-url   <base_url>   上游接口，如 https://api.example.com/v1
+    codexctl set-key   <api_key>
+    codexctl set-model <model>      默认模型，如 deepseek
+    codexctl set-wire  chat|responses   上游协议（deepseek 用 chat）
+    codexctl set-ws    <dir>        Codex 的工作目录
+
+  运维
+    codexctl dev <参数...>       透传给 devctl（控制其他设备）
+    codexctl restart             重启网关
+    codexctl fetch               重新下载 codex 二进制
+    codexctl toolchain           安装/更新 Python + C(zig cc) 开发环境
+    codexctl dns                 重新生成 /etc/resolv.conf
+    codexctl test                用当前配置跑一次 codex 自检
+EOF
+    ;;
+
+  web|url)
+    echo "网页控制台（同一 WiFi 下用浏览器打开）："
+    urls
+    ;;
+
+  token)
+    jget token
+    ;;
+
+  status)
+    echo "== 配置 ($GW) =="
+    echo "  上游接口 : $(jget base_url)"
+    echo "  模型     : $(jget model)"
+    echo "  上游协议 : $(jget upstream_wire)"
+    echo "  工作目录 : $(jget workspace)"
+    k=$(jget api_key)
+    if [ -n "$k" ]; then
+      n=${#k}
+      if [ "$n" -gt 12 ]; then echo "  API Key  : $(echo "$k" | cut -c1-6)...$(echo "$k" | cut -c$((n-3))-$n)"; else echo "  API Key  : ***"; fi
+    else echo "  API Key  : (未设置)"; fi
+    echo "== 运行 =="
+    if pgrep -f codexweb >/dev/null 2>&1; then echo "  网关     : 运行中 (pid $(pgrep -f codexweb | head -1))"; else echo "  网关     : 未运行"; fi
+    if [ -x "$DATA/bin/codex" ]; then echo "  codex    : $("$DATA/bin/codex" --version 2>/dev/null)"; else echo "  codex    : 未安装（codexctl fetch 下载）"; fi
+    if [ -x "$DATA/bin/python3" ]; then echo "  python   : $("$DATA/bin/python3" -V 2>&1 | head -1)"; else echo "  python   : 未安装（codexctl toolchain 安装）"; fi
+    if [ -x "$DATA/bin/cc" ]; then echo "  C 编译器 : $(ls -l "$DATA/bin/cc" 2>/dev/null | awk '{print $NF}')"; else echo "  C 编译器 : 未安装（codexctl toolchain 安装）"; fi
+    echo "  DNS      : $(grep -c nameserver /system/etc/resolv.conf 2>/dev/null || echo 0) 个 nameserver"
+    echo "  CA 包    : $([ -s "$DATA/ca-bundle.crt" ] && echo 已生成 || echo 缺失)"
+    echo "== 访问地址 =="
+    urls
+    ;;
+
+  models)
+    curl -s --max-time 60 "$BASE/v1/models" -H "Authorization: Bearer codexweb-local" \
+      | tr ',' '\n' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | sort -u
+    ;;
+
+  log)
+    if [ "$2" = "-f" ]; then tail -f "$LOG"; else tail -n 60 "$LOG"; fi
+    ;;
+
+  set-url)   jset base_url "$2" ;;
+  set-key)   jset api_key  "$2" ;;
+  set-model) jset model    "$2" ;;
+  set-wire)  jset upstream_wire "$2" ;;
+  set-ws)    jset workspace "$2" ;;
+
+  dev|devctl)
+    shift
+    exec devctl "$@"
+    ;;
+
+  restart)
+    pkill -f codexweb 2>/dev/null
+    sleep 1
+    MODDIR=$(ls -d /data/adb/modules/codex_android /data/adb/modules_update/codex_android 2>/dev/null | head -1)
+    export PATH=/system/bin:/system/xbin:$PATH HOME=$DATA CODEX_HOME=$DATA TMPDIR=$DATA/tmp SHELL=/system/bin/sh
+    [ -s "$DATA/ca-bundle.crt" ] || cat /system/etc/security/cacerts/* > "$DATA/ca-bundle.crt" 2>/dev/null
+    export SSL_CERT_FILE="$DATA/ca-bundle.crt"
+    ( "$MODDIR/system/bin/codexweb" -home "$DATA" -codex "$DATA/bin/codex" -addr "0.0.0.0:$PORT" >> "$LOG" 2>&1 ) &
+    sleep 2
+    if pgrep -f codexweb >/dev/null 2>&1; then echo "网关已重启"; urls; else echo "启动失败，看 codexctl log"; fi
+    ;;
+
+  fetch)
+    MODDIR=$(ls -d /data/adb/modules/codex_android /data/adb/modules_update/codex_android 2>/dev/null | head -1)
+    sh "$MODDIR/scripts/fetch-codex.sh"
+    ;;
+
+  toolchain|tc|py|python|cc|gcc)
+    MODDIR=$(ls -d /data/adb/modules/codex_android /data/adb/modules_update/codex_android 2>/dev/null | head -1)
+    case "$1" in
+      py|python) sh "$MODDIR/scripts/fetch-toolchain.sh" python "$2" ;;
+      cc|gcc)    sh "$MODDIR/scripts/fetch-toolchain.sh" cc "$2" ;;
+      *)         sh "$MODDIR/scripts/fetch-toolchain.sh" all "$2" ;;
+    esac
+    ;;
+
+  dns)
+    MODDIR=$(ls -d /data/adb/modules/codex_android /data/adb/modules_update/codex_android 2>/dev/null | head -1)
+    sh "$MODDIR/scripts/resolv.sh" && echo "已刷新：" && cat /system/etc/resolv.conf
+    ;;
+
+  test)
+    export HOME=$DATA CODEX_HOME=$DATA TMPDIR=$DATA/tmp SHELL=/system/bin/sh
+    [ -s "$DATA/ca-bundle.crt" ] && export SSL_CERT_FILE="$DATA/ca-bundle.crt"
+    cd "$DATA/workspace" 2>/dev/null
+    echo "== 1) 网关 /api/state =="
+    curl -s --max-time 15 -H "X-Codexweb-Token: $(jget token)" "$BASE/api/state"; echo
+    echo "== 2) 上游模型列表（前 10） =="
+    curl -s --max-time 60 "$BASE/v1/models" -H "Authorization: Bearer codexweb-local" | tr ',' '\n' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -10
+    echo "== 3) codex exec 自检 =="
+    "$DATA/bin/codex" exec --json --skip-git-repo-check "Run the shell command: uname -m ; then reply DONE" </dev/null 2>&1 | tail -20
+    ;;
+
+  *)
+    echo "未知命令：$1（codexctl help 看用法）"
+    exit 1
+    ;;
+esac
