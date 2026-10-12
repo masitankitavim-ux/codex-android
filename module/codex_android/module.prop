@@ -1,0 +1,6 @@
+id=codex_android
+name=Codex CLI for Android
+version=1.6.2
+versionCode=10
+author=codexweb
+description=把 Codex CLI 装进安卓：内置本机 LLM 网关（Responses->chat 协议转换）+ 网页控制台（可切换上游接口与模型、明暗主题、处理过程实时滚动、技能管理、定时任务）+ devctl（在手机上 SSH 控制其他设备）。浏览器访问 http://<手机IP>:8787
